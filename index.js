@@ -79,7 +79,6 @@ app.post('/api/sign', rateLimiter, async (req, res) => {
     const wallet = new ethers.Wallet(signerPrivateKey);
     
     // Generate rarities for NFTs
-    // For this example, we'll assign random rarities
     // In production, you might have a more complex system to determine rarities
     const rarities = [];
     for (let i = 0; i < quantity; i++) {
@@ -87,6 +86,38 @@ app.post('/api/sign', rateLimiter, async (req, res) => {
       const rarity = Math.floor(Math.random() * 5);
       rarities.push(rarity);
     }
+
+    /*
+    // Define rarity probabilities (sum should equal 1.0)
+    const rarityProbabilities = {
+      0: 0.50, // COMMON: 50%
+      1: 0.30, // UNCOMMON: 30%
+      2: 0.15, // RARE: 15%
+      3: 0.04, // EPIC: 4%
+      4: 0.01  // LEGENDARY: 1%
+    };
+
+    // Function to generate a random rarity based on probabilities
+    function getRandomRarity() {
+      const random = Math.random();
+      let cumulativeProbability = 0;
+
+      for (const [rarity, probability] of Object.entries(rarityProbabilities)) {
+        cumulativeProbability += probability;
+        if (random <= cumulativeProbability) {
+          return parseInt(rarity);
+        }
+      }
+      return 0; // Fallback to COMMON if something goes wrong
+    }
+
+    // Generate rarities for NFTs
+    const rarities = [];
+    for (let i = 0; i < quantity; i++) {
+      const rarity = getRandomRarity();
+      rarities.push(rarity);
+    }
+    */
     
     // Convert rarities to bytes
     const encodedRarities = ethers.concat(
