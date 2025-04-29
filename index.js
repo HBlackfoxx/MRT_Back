@@ -5,157 +5,209 @@ const { ethers } = require('ethers');
 const crypto = require('crypto');
 require('dotenv').config();
 
+console.log('Starting server...');
+console.log('Environment variables:', {
+  PORT: process.env.PORT,
+  FRONTEND_URL: process.env.FRONTEND_URL,
+  NODE_ENV: process.env.NODE_ENV,
+  SIGNER_PRIVATE_KEY: process.env.SIGNER_PRIVATE_KEY ? 'Set' : 'Not set'
+});
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// Enhanced CORS configuration
+app.use(cors({
+  origin: process.env.FRONTEND_URL || '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true // Add this if you're using cookies or authentication
+}));
 
-// Store used nonces to prevent replay attacks
+// Limit payload size
+app.use(express.json({ limit: '10kb' }));
+
+// Store used nonces
 const usedNonces = new Set();
 
 // Rate limiting
 const requestCounts = {};
-const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
+const RATE_LIMIT_WINDOW = 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 10;
 
-// Rate limiting middleware
+setInterval(() => {
+  const now = Date.now();
+  for (const ip in requestCounts) {
+    if (now - requestCounts[ip].timestamp > RATE_LIMIT_WINDOW) {
+      delete requestCounts[ip];
+    }
+  }
+}, 5 * 60 * 1000);
+
 function rateLimiter(req, res, next) {
   const ip = req.ip;
   const now = Date.now();
-  
   if (!requestCounts[ip]) {
     requestCounts[ip] = { count: 0, timestamp: now };
   }
-  
-  // Reset count if window has passed
   if (now - requestCounts[ip].timestamp > RATE_LIMIT_WINDOW) {
     requestCounts[ip] = { count: 0, timestamp: now };
   }
-  
-  // Increment count
   requestCounts[ip].count++;
-  
-  // Check if over limit
   if (requestCounts[ip].count > MAX_REQUESTS_PER_WINDOW) {
     return res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
   }
-  
   next();
 }
 
-// Generate a signature for NFT minting
+// Security headers
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('X-Frame-Options', 'DENY');
+  next();
+});
+
+// Signature endpoint
 app.post('/api/sign', rateLimiter, async (req, res) => {
   try {
+    console.log('Received /api/sign request:', {
+      body: req.body,
+      ip: req.ip,
+      headers: req.headers
+    });
+
     const { address, quantity, nonce } = req.body;
-    
-    // Validation
+
     if (!address || !ethers.isAddress(address)) {
+      console.log('Validation failed: Invalid address', { address });
       return res.status(400).json({ error: 'Invalid address' });
     }
-    
-    if (!quantity || quantity <= 0 || quantity > 10) {
+
+    if (!quantity || isNaN(quantity) || quantity <= 0 || quantity > 10) {
+      console.log('Validation failed: Invalid quantity', { quantity });
       return res.status(400).json({ error: 'Invalid quantity. Must be between 1 and 10.' });
     }
-    
-    if (!nonce) {
-      return res.status(400).json({ error: 'Nonce is required' });
+
+    if (!nonce || typeof nonce !== 'string' || !nonce.startsWith('0x')) {
+      console.log('Validation failed: Invalid nonce', { nonce });
+      return res.status(400).json({ error: 'Invalid nonce format' });
     }
-    
-    // Check if nonce was used before
+
     const nonceHash = crypto.createHash('sha256').update(nonce.toString()).digest('hex');
     if (usedNonces.has(nonceHash)) {
+      console.log('Validation failed: Nonce already used', { nonce });
       return res.status(400).json({ error: 'Nonce already used' });
     }
-    
-    // Get signer wallet from environment variable
+
     const signerPrivateKey = process.env.SIGNER_PRIVATE_KEY;
     if (!signerPrivateKey) {
-      console.error('SIGNER_PRIVATE_KEY not set in environment');
+      console.error('SIGNER_PRIVATE_KEY not set');
       return res.status(500).json({ error: 'Server configuration error' });
     }
-    
+
+    console.log('Creating wallet');
     const wallet = new ethers.Wallet(signerPrivateKey);
 
-    // Define rarity probabilities (sum should equal 1.0)
     const rarityProbabilities = {
-      0: 0.50, // COMMON: 50%
-      1: 0.25, // UNCOMMON: 25%
-      2: 0.15, // RARE: 15%
-      3: 0.07, // EPIC: 7%
-      4: 0.03  // LEGENDARY: 3%
+      0: 0.50,
+      1: 0.25,
+      2: 0.15,
+      3: 0.07,
+      4: 0.03
     };
 
-    // Function to generate a random rarity based on probabilities
     function getRandomRarity() {
-      const random = Math.random();
+      const randomBytes = crypto.randomBytes(4);
+      const random = randomBytes.readUInt32LE() / 0xFFFFFFFF;
       let cumulativeProbability = 0;
-
       for (const [rarity, probability] of Object.entries(rarityProbabilities)) {
         cumulativeProbability += probability;
         if (random <= cumulativeProbability) {
           return parseInt(rarity);
         }
       }
-      return 0; // Fallback to COMMON if something goes wrong
+      return 0;
     }
 
-    // Generate rarities for NFTs
     const rarities = [];
     for (let i = 0; i < quantity; i++) {
       const rarity = getRandomRarity();
       rarities.push(rarity);
     }
 
-    // Convert rarities to bytes
+    console.log('Generated rarities:', rarities);
+
     const encodedRarities = ethers.concat(
       rarities.map(r => new Uint8Array([r]))
     );
-    
-    // Create message to sign as expected by the smart contract
-    // message = keccak256(abi.encodePacked(recipient, nonce, quantity, encodedRarities))
+
+    console.log('Creating message hash');
     const messageHash = ethers.keccak256(
       ethers.solidityPacked(
         ['address', 'bytes32', 'uint256', 'bytes'],
         [address, nonce, quantity, encodedRarities]
       )
     );
-    
-    // Sign the hash using EIP-191 format
+
+    console.log('Signing message');
     const signature = await wallet.signMessage(ethers.getBytes(messageHash));
-    
-    // Combine rarities with signature
-    // First byte(s) are the rarities, followed by the signature
+
     const fullSignature = ethers.concat([encodedRarities, ethers.getBytes(signature)]);
-    
-    // Mark nonce as used
+
     usedNonces.add(nonceHash);
-    
-    // Clean up old nonces (optional - for a production system you might use Redis with TTL)
+    console.log('Nonce stored:', nonceHash);
+
     if (usedNonces.size > 1000) {
       const oldestNonces = Array.from(usedNonces).slice(0, 100);
       oldestNonces.forEach(n => usedNonces.delete(n));
     }
-    
-    // Return the signature
+
+    console.log('Sending signature response');
     return res.json({
       signature: ethers.hexlify(fullSignature),
       nonce
     });
-    
+
   } catch (error) {
-    console.error('Error generating signature:', error);
-    return res.status(500).json({ error: 'Failed to generate signature' });
+    console.error('Error in /api/sign:', error.stack);
+    return res.status(500).json({ error: `Failed to generate signature: ${error.message}` });
   }
 });
 
-// Health check endpoint
+// Health check
 app.get('/health', (req, res) => {
-  res.status(200).send('OK');
+  console.log('Health check requested');
+  res.status(200).json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
 });
 
-// Start the server
+// Catch-all
+app.use((req, res) => {
+  console.log('Unhandled route:', req.originalUrl);
+  res.status(404).json({ error: 'Not found' });
+});
+
+// Error handling
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err.stack);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// Start server
 app.listen(PORT, () => {
   console.log(`Signature server running on port ${PORT}`);
+  console.log(`CORS origin: ${process.env.FRONTEND_URL || '*'}`);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err.stack);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });

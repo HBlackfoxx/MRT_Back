@@ -4,7 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js",
+    "pm2:start": "node ./node_modules/.bin/pm2 start ecosystem.config.js",
+    "pm2:stop": "node ./node_modules/.bin/pm2 stop ecosystem.config.js",
+    "pm2:restart": "node ./node_modules/.bin/pm2 restart ecosystem.config.js",
+    "pm2:status": "node ./node_modules/.bin/pm2 list"
   },
   "repository": {
     "type": "git",
@@ -23,6 +28,7 @@
     "crypto": "^1.0.1",
     "dotenv": "^16.5.0",
     "ethers": "^6.13.5",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "pm2": "^6.0.5"
   }
 }
